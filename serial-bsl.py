@@ -48,6 +48,10 @@ import os
 import struct
 import binascii
 import traceback
+import logging
+from util.serial_bsl_logging import SerialBSLLogger
+
+logger = SerialBSLLogger.getLogger("serial-bsl")
 
 try:
     import magic
@@ -66,7 +70,7 @@ except ImportError:
 VERSION_STRING = "2.1"
 
 # Verbose level
-QUIET = 5
+QUIET = logging.INFO
 
 # Check which version of Python is running
 PY3 = sys.version_info >= (3, 0)
@@ -85,10 +89,6 @@ except ImportError:
         print('   Mac:     sudo port install py-serial')
     sys.exit(1)
 
-
-def mdebug(level, message, attr='\n'):
-    if QUIET >= level:
-        print(message, end=attr, file=sys.stderr)
 
 # Takes chip IDs (obtained via Get ID command) to human-readable names
 CHIP_ID_STRS = {0xb964: 'CC2538',
@@ -147,9 +147,9 @@ class FirmwareFile(object):
             # will be True in both cases"""
             if file_type == b'text/plain':
                 firmware_is_hex = True
-                mdebug(5, "Firmware file: Intel Hex")
+                logger.info("Firmware file: Intel Hex")
             elif file_type == b'application/octet-stream':
-                mdebug(5, "Firmware file: Raw Binary")
+                logger.info("Firmware file: Raw Binary")
             else:
                 error_str = "Could not determine firmware type. Magic " \
                             "indicates '%s'" % (file_type)
@@ -157,13 +157,13 @@ class FirmwareFile(object):
         else:
             if os.path.splitext(path)[1][1:] in self.HEX_FILE_EXTENSIONS:
                 firmware_is_hex = True
-                mdebug(5, "Your firmware looks like an Intel Hex file")
+                logger.info("Your firmware looks like an Intel Hex file")
             else:
-                mdebug(5, "Cannot auto-detect firmware filetype: Assuming .bin")
+                logger.info("Cannot auto-detect firmware filetype: Assuming .bin")
 
-            mdebug(10, "For more solid firmware type auto-detection, install "
+            logger.debug("For more solid firmware type auto-detection, install "
                        "python-magic.")
-            mdebug(10, "Please see the readme for more details.")
+            logger.debug("Please see the readme for more details.")
 
         if firmware_is_hex:
             if have_hex_support:
@@ -276,7 +276,7 @@ class CommandInterface(object):
 
         # Our bytearray's length is: 2 initial bytes + 2 bytes for the ACK/NACK
         # plus a possible N-4 additional (buffered) bytes
-        mdebug(10, "Got %d additional bytes before ACK/NACK" % (len(got) - 4,))
+        logger.debug("Got %d additional bytes before ACK/NACK" % (len(got) - 4,))
 
         # wait for ask
         ask = got[-1]
@@ -286,11 +286,11 @@ class CommandInterface(object):
             return 1
         elif ask == CommandInterface.NACK_BYTE:
             # NACK
-            mdebug(10, "Target replied with a NACK during %s" % info)
+            logger.debug("Target replied with a NACK during %s" % info)
             return 0
 
         # Unknown response
-        mdebug(10, "Unrecognised response 0x%x to %s" % (ask, info))
+        logger.debug("Unrecognised response 0x%x to %s" % (ask, info))
         return 0
 
     def _encode_addr(self, addr):
@@ -332,11 +332,11 @@ class CommandInterface(object):
                 goal = len(data)
                 written = self.sp.write(data)
         if written < goal:
-            mdebug(10, "*** Only wrote {} of target {} bytes"
+            logger.debug("*** Only wrote {} of target {} bytes"
                    .format(written, goal))
             if is_retry and written == 0:
                 raise CmdException("Failed to write data on the serial bus")
-            mdebug(10, "*** Retrying write for remainder")
+            logger.debug("*** Retrying write for remainder")
             if type(data) == int:
                 return self._write(data, is_retry=True)
             else:
@@ -370,7 +370,7 @@ class CommandInterface(object):
         chks = got[1]  # rcv checksum
         data = bytearray(self._read(size - 2))  # rcv data
 
-        mdebug(10, "*** received %x bytes" % size)
+        logger.debug("*** received %x bytes" % size)
         if chks == sum(data) & 0xFF:
             self.sendAck()
             return data
@@ -386,7 +386,7 @@ class CommandInterface(object):
         # flush serial input buffer for first ACK reception
         self.sp.flushInput()
 
-        mdebug(10, "*** sending synch sequence")
+        logger.debug("*** sending synch sequence")
         self._write(cmd)  # send U
         self._write(cmd)  # send U
         return self._wait_for_ack("Synch (0x55 0x55)", 2)
@@ -398,15 +398,14 @@ class CommandInterface(object):
                                "(Did you disable the bootloader?)")
 
         if stat[0] == COMMAND_RET_SUCCESS:
-            mdebug(10, "Command Successful")
+            logger.debug("Command Successful")
             return 1
         else:
             stat_str = RETURN_CMD_STRS.get(stat[0], None)
             if stat_str is None:
-                mdebug(0, "Warning: unrecognized status returned "
-                          "0x%x" % stat[0])
+                logger.warning("Unrecognized status returned 0x%x" % stat[0])
             else:
-                mdebug(0, "Target returned: 0x%x, %s" % (stat[0], stat_str))
+                logger.warning("Target returned: 0x%x, %s" % (stat[0], stat_str))
             return 0
 
     def cmdPing(self):
@@ -417,7 +416,7 @@ class CommandInterface(object):
         self._write(cmd)  # send checksum
         self._write(cmd)  # send data
 
-        mdebug(10, "*** Ping command (0x20)")
+        logger.debug("*** Ping command (0x20)")
         if self._wait_for_ack("Ping (0x20)"):
             return self.checkLastCmd()
 
@@ -429,7 +428,7 @@ class CommandInterface(object):
         self._write(cmd)  # send checksum
         self._write(cmd)  # send data
 
-        mdebug(10, "*** Reset command (0x25)")
+        logger.debug("*** Reset command (0x25)")
         if self._wait_for_ack("Reset (0x25)"):
             return 1
 
@@ -441,14 +440,14 @@ class CommandInterface(object):
         self._write(cmd)  # send checksum
         self._write(cmd)  # send data
 
-        mdebug(10, "*** GetChipId command (0x28)")
+        logger.debug("*** GetChipId command (0x28)")
         if self._wait_for_ack("Get ChipID (0x28)"):
             # 4 byte answ, the 2 LSB hold chip ID
             version = self.receivePacket()
             if self.checkLastCmd():
                 assert len(version) == 4, ("Unreasonable chip "
                                            "id: %s" % repr(version))
-                mdebug(10, "    Version 0x%02X%02X%02X%02X" % tuple(version))
+                logger.debug("    Version 0x%02X%02X%02X%02X" % tuple(version))
                 chip_id = (version[2] << 8) | version[3]
                 return chip_id
             else:
@@ -462,7 +461,7 @@ class CommandInterface(object):
         self._write(cmd)  # send checksum
         self._write(cmd)  # send data
 
-        mdebug(10, "*** GetStatus command (0x23)")
+        logger.debug("*** GetStatus command (0x23)")
         if self._wait_for_ack("Get Status (0x23)"):
             stat = self.receivePacket()
             return stat
@@ -475,7 +474,7 @@ class CommandInterface(object):
         self._write(cmd)  # send checksum
         self._write(cmd)  # send data
 
-        mdebug(10, "*** SetXOsc command (0x29)")
+        logger.debug("*** SetXOsc command (0x29)")
         if self._wait_for_ack("SetXOsc (0x29)"):
             return 1
             # UART speed (needs) to be changed!
@@ -489,7 +488,7 @@ class CommandInterface(object):
         self._write(cmd)  # send cmd
         self._write(self._encode_addr(addr))  # send addr
 
-        mdebug(10, "*** Run command(0x22)")
+        logger.debug("*** Run command(0x22)")
         return 1
 
     def cmdEraseMemory(self, addr, size):
@@ -502,7 +501,7 @@ class CommandInterface(object):
         self._write(self._encode_addr(addr))  # send addr
         self._write(self._encode_addr(size))  # send size
 
-        mdebug(10, "*** Erase command(0x26)")
+        logger.debug("*** Erase command(0x26)")
         if self._wait_for_ack("Erase memory (0x26)", 10):
             return self.checkLastCmd()
 
@@ -514,7 +513,7 @@ class CommandInterface(object):
         self._write(cmd)  # send checksum
         self._write(cmd)  # send cmd
 
-        mdebug(10, "*** Bank Erase command(0x2C)")
+        logger.debug("*** Bank Erase command(0x2C)")
         if self._wait_for_ack("Bank Erase (0x2C)", 10):
             return self.checkLastCmd()
 
@@ -528,7 +527,7 @@ class CommandInterface(object):
         self._write(self._encode_addr(addr))  # send addr
         self._write(self._encode_addr(size))  # send size
 
-        mdebug(10, "*** CRC32 command(0x27)")
+        logger.debug("*** CRC32 command(0x27)")
         if self._wait_for_ack("Get CRC32 (0x27)", 1):
             crc = self.receivePacket()
             if self.checkLastCmd():
@@ -545,7 +544,7 @@ class CommandInterface(object):
         self._write(self._encode_addr(size))  # send size
         self._write(self._encode_addr(0x00000000))  # send number of reads
 
-        mdebug(10, "*** CRC32 command(0x27)")
+        logger.debug("*** CRC32 command(0x27)")
         if self._wait_for_ack("Get CRC32 (0x27)", 1):
             crc = self.receivePacket()
             if self.checkLastCmd():
@@ -565,7 +564,7 @@ class CommandInterface(object):
         self._write(self._encode_addr(addr))  # send addr
         self._write(self._encode_addr(size))  # send size
 
-        mdebug(10, "*** Download command (0x21)")
+        logger.debug("*** Download command (0x21)")
         if self._wait_for_ack("Download (0x21)", 2):
             return self.checkLastCmd()
 
@@ -579,7 +578,7 @@ class CommandInterface(object):
         self._write(cmd)  # send cmd
         self._write(bytearray(data))  # send data
 
-        mdebug(10, "*** Send Data (0x24)")
+        logger.debug("*** Send Data (0x24)")
         if self._wait_for_ack("Send data (0x24)", 10):
             return self.checkLastCmd()
 
@@ -593,7 +592,7 @@ class CommandInterface(object):
         self._write(self._encode_addr(addr))  # send addr
         self._write(4)  # send width, 4 bytes
 
-        mdebug(10, "*** Mem Read (0x2A)")
+        logger.debug("*** Mem Read (0x2A)")
         if self._wait_for_ack("Mem Read (0x2A)", 1):
             data = self.receivePacket()
             if self.checkLastCmd():
@@ -612,7 +611,7 @@ class CommandInterface(object):
         self._write(1)  # send width, 4 bytes
         self._write(1)  # send number of reads
 
-        mdebug(10, "*** Mem Read (0x2A)")
+        logger.debug("*** Mem Read (0x2A)")
         if self._wait_for_ack("Mem Read (0x2A)", 1):
             data = self.receivePacket()
             if self.checkLastCmd():
@@ -630,7 +629,7 @@ class CommandInterface(object):
         self._write(bytearray(data))  # send data
         self._write(width)  # send width, 4 bytes
 
-        mdebug(10, "*** Mem write (0x2B)")
+        logger.debug("*** Mem write (0x2B)")
         if self._wait_for_ack("Mem Write (0x2B)", 2):
             return self.checkLastCmd()
 
@@ -658,7 +657,7 @@ class CommandInterface(object):
                                      "Do you want to continue?", "no")):
                     raise Exception('Aborted by user.')
 
-        mdebug(5, "Writing %(lng)d bytes starting at address 0x%(addr)08X" %
+        logger.info("Writing %(lng)d bytes starting at address 0x%(addr)08X" %
                {'lng': lng, 'addr': addr})
 
         offs = 0
@@ -672,8 +671,9 @@ class CommandInterface(object):
                     # set starting address if not set
                     self.cmdDownload(addr, lng)
                     addr_set = 1
-                mdebug(5, " Write %(len)d bytes at 0x%(addr)08X"
-                       % {'addr': addr, 'len': trsf_size}, '\r')
+                SerialBSLLogger.console_handler.terminator = '\r'
+                logger.info("Write %(len)d bytes at 0x%(addr)08X\r" % {'addr': addr, 'len': trsf_size})
+                SerialBSLLogger.console_handler.terminator = '\n'
                 sys.stdout.flush()
 
                 # send next data packet
@@ -685,8 +685,7 @@ class CommandInterface(object):
             addr = addr + trsf_size
             lng = lng - trsf_size
 
-        mdebug(5, "Write %(len)d bytes at 0x%(addr)08X" % {'addr': addr,
-                                                           'len': lng})
+        logger.info("Write %(len)d bytes at 0x%(addr)08X" % {'addr': addr, 'len': lng})
         self.cmdDownload(addr, lng)
         return self.cmdSendData(data[offs:offs+lng])  # send last data packet
 
@@ -717,7 +716,7 @@ class Chip(object):
                                                    self.bootloader_dis_val)]
 
         if cmd.writeMemory(self.bootloader_address, pattern):
-            mdebug(5, "    Set bootloader closed done                      ")
+            logger.info("    Set bootloader closed done                      ")
         else:
             raise CmdException("Set bootloader closed failed             ")
 
@@ -764,14 +763,14 @@ class CC2538(Chip):
         else:
             ieee_addr = ieee_addr_end + ieee_addr
 
-        mdebug(5, "CC2538 PG%d.%d: %dKB Flash, %dKB SRAM, CCFG at 0x%08X"
+        logger.info("CC2538 PG%d.%d: %dKB Flash, %dKB SRAM, CCFG at 0x%08X"
                % (pg_major, pg_minor, self.size >> 10, sram,
                   self.bootloader_address))
-        mdebug(5, "Primary IEEE Address: %s"
+        logger.info("Primary IEEE Address: %s"
                % (':'.join('%02X' % x for x in ieee_addr)))
 
     def erase(self):
-        mdebug(5, "Erasing %s bytes starting at address 0x%08X"
+        logger.info("Erasing %s bytes starting at address 0x%08X"
                % (self.size, self.flash_start_addr))
         return self.command_interface.cmdEraseMemory(self.flash_start_addr,
                                                      self.size)
@@ -849,10 +848,10 @@ class CC26xx(Chip):
         ieee_addr += self.command_interface.cmdMemReadCC26xx(
                                         addr_ieee_address_primary)[::-1]
 
-        mdebug(5, "%s (%s): %dKB Flash, %s SRAM, CCFG.BL_CONFIG at 0x%08X"
+        logger.info("%s (%s): %dKB Flash, %s SRAM, CCFG.BL_CONFIG at 0x%08X"
                % (chip, package, self.size >> 10, sram,
                   self.bootloader_address))
-        mdebug(5, "Primary IEEE Address: %s"
+        logger.info("Primary IEEE Address: %s"
                % (':'.join('%02X' % x for x in ieee_addr)))
 
     def _identify_cc26xx(self, pg, protocols):
@@ -896,7 +895,7 @@ class CC26xx(Chip):
         return "%s %s" % (chip_str, pg_str)
 
     def erase(self):
-        mdebug(5, "Erasing all main bank flash sectors")
+        logger.info("Erasing all main bank flash sectors")
         return self.command_interface.cmdBankErase()
 
     def read_memory(self, addr):
@@ -1034,9 +1033,9 @@ if __name__ == "__main__":
 
     for o, a in opts:
         if o == '-V':
-            QUIET = 10
+            QUIET = logging.DEBUG
         elif o == '-q':
-            QUIET = 0
+            QUIET = logging.ERROR
         elif o == '-h' or o == '--help':
             usage()
             sys.exit(0)
@@ -1072,6 +1071,8 @@ if __name__ == "__main__":
             sys.exit(0)
         else:
             assert False, "Unhandled option"
+
+    SerialBSLLogger.setup(QUIET)
 
     try:
         # Sanity checks
@@ -1125,13 +1126,13 @@ if __name__ == "__main__":
         cmd.open(conf['port'], conf['baud'])
         cmd.invoke_bootloader(conf['bootloader_active_high'],
                               conf['bootloader_invert_lines'])
-        mdebug(5, "Opening port %(port)s, baud %(baud)d"
+        logger.info("Opening port %(port)s, baud %(baud)d"
                % {'port': conf['port'], 'baud': conf['baud']})
         if conf['write'] or conf['verify']:
-            mdebug(5, "Reading data from %s" % args[0])
+            logger.info("Reading data from %s" % args[0])
             firmware = FirmwareFile(args[0])
 
-        mdebug(5, "Connecting to target...")
+        logger.info("Connecting to target...")
 
         if not cmd.sendSynch():
             raise CmdException("Can't connect to target. Ensure boot loader "
@@ -1145,10 +1146,10 @@ if __name__ == "__main__":
         chip_id_str = CHIP_ID_STRS.get(chip_id, None)
 
         if chip_id_str is None:
-            mdebug(10, '    Unrecognized chip ID. Trying CC13xx/CC26xx')
+            logger.debug('    Unrecognized chip ID. Trying CC13xx/CC26xx')
             device = CC26xx(cmd)
         else:
-            mdebug(10, "    Target id 0x%x, %s" % (chip_id, chip_id_str))
+            logger.debug("    Target id 0x%x, %s" % (chip_id, chip_id_str))
             device = CC2538(cmd)
 
         # Choose a good default address unless the user specified -a
@@ -1160,9 +1161,9 @@ if __name__ == "__main__":
                 cmd.close()
                 conf['baud'] = 1000000
                 cmd.open(conf['port'], conf['baud'])
-                mdebug(6, "Opening port %(port)s, baud %(baud)d"
+                logger.info("Opening port %(port)s, baud %(baud)d"
                        % {'port': conf['port'], 'baud': conf['baud']})
-                mdebug(6, "Reconnecting to target at higher speed...")
+                logger.info("Reconnecting to target at higher speed...")
                 if (cmd.sendSynch() != 1):
                     raise CmdException("Can't connect to target after clock "
                                        "source switch. (Check external "
@@ -1174,7 +1175,7 @@ if __name__ == "__main__":
         if conf['erase']:
             # we only do full erase for now
             if device.erase():
-                mdebug(5, "    Erase done")
+                logger.info("    Erase done")
             else:
                 raise CmdException("Erase failed")
 
@@ -1182,19 +1183,19 @@ if __name__ == "__main__":
             # TODO: check if boot loader back-door is open, need to read
             #       flash size first to get address
             if cmd.writeMemory(conf['address'], firmware.bytes):
-                mdebug(5, "    Write done                                ")
+                logger.info("    Write done                                ")
             else:
                 raise CmdException("Write failed                       ")
 
         if conf['verify']:
-            mdebug(5, "Verifying by comparing CRC32 calculations.")
+            logger.info("Verifying by comparing CRC32 calculations.")
 
             crc_local = firmware.crc32()
             # CRC of target will change according to length input file
             crc_target = device.crc(conf['address'], len(firmware.bytes))
 
             if crc_local == crc_target:
-                mdebug(5, "    Verified (match: 0x%08x)" % crc_local)
+                logger.info("    Verified (match: 0x%08x)" % crc_local)
             else:
                 cmd.cmdReset()
                 raise Exception("NO CRC32 match: Local = 0x%x, "
@@ -1203,12 +1204,12 @@ if __name__ == "__main__":
         if conf['ieee_address'] != 0:
             ieee_addr = parse_ieee_address(conf['ieee_address'])
             if PY3:
-                mdebug(5, "Setting IEEE address to %s"
+                logger.info("Setting IEEE address to %s"
                        % (':'.join(['%02x' % b
                                     for b in struct.pack('>Q', ieee_addr)])))
                 ieee_addr_bytes = struct.pack('<Q', ieee_addr)
             else:
-                mdebug(5, "Setting IEEE address to %s"
+                logger.info("Setting IEEE address to %s"
                        % (':'.join(['%02x' % ord(b)
                                     for b in struct.pack('>Q', ieee_addr)])))
                 ieee_addr_bytes = [ord(b)
@@ -1216,7 +1217,7 @@ if __name__ == "__main__":
 
             if cmd.writeMemory(device.addr_ieee_address_secondary,
                                ieee_addr_bytes):
-                mdebug(5, "    "
+                logger.info("    "
                           "Set address done                                ")
             else:
                 raise CmdException("Set address failed                       ")
@@ -1227,18 +1228,18 @@ if __name__ == "__main__":
             # Round up to a 4-byte boundary
             length = (length + 3) & ~0x03
 
-            mdebug(5, "Reading %s bytes starting at address 0x%x"
+            logger.info("Reading %s bytes starting at address 0x%x"
                    % (length, conf['address']))
             with open(args[0], 'wb') as f:
                 for i in range(0, length >> 2):
                     # reading 4 bytes at a time
                     rdata = device.read_memory(conf['address'] + (i * 4))
-                    mdebug(5, " 0x%x: 0x%02x%02x%02x%02x"
+                    logger.info(" 0x%x: 0x%02x%02x%02x%02x"
                            % (conf['address'] + (i * 4), rdata[0], rdata[1],
                               rdata[2], rdata[3]), '\r')
                     f.write(rdata)
                 f.close()
-            mdebug(5, "    Read done                                ")
+            logger.info("    Read done                                ")
 
         if conf['disable-bootloader']:
             device.disable_bootloader()
@@ -1246,6 +1247,5 @@ if __name__ == "__main__":
         cmd.cmdReset()
 
     except Exception as err:
-        if QUIET >= 10:
-            traceback.print_exc()
+        logger.debug(traceback.format_exc())
         exit('ERROR: %s' % str(err))
