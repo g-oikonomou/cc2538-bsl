@@ -178,9 +178,8 @@ class CommandInterface(object):
                        COMMAND_RET_INVALID_ADR: 'Invalid address',
                        COMMAND_RET_FLASH_FAIL: 'Flash fail'}
 
-    def __init__(self, interface):
-        self.protocol = Protocol(interface)
-        self.interface = interface
+    def __init__(self, protocol):
+        self.protocol = protocol
 
     def _encode_four_bytes(self, addr):
         byte3 = (addr >> 0) & 0xFF
@@ -440,12 +439,14 @@ class CommandInterface(object):
 
 
 class Chip(object):
-    def __init__(self, command_interface):
-        self.command_interface = command_interface
-
+    def __init__(self, phy_if):
         # Some defaults. The child can override.
         self.flash_start_addr = 0x00000000
         self.has_cmd_set_xosc = False
+
+        self.phy_if = phy_if
+        self.protocol = Protocol(phy_if)
+        self.cmd_if = CommandInterface(self.protocol)
 
     def crc(self, address, size):
         return getattr(self.command_interface, self.crc_cmd)(address, size)
@@ -471,8 +472,8 @@ class Chip(object):
 
 
 class CC2538(Chip):
-    def __init__(self, command_interface):
-        super(CC2538, self).__init__(command_interface)
+    def __init__(self, phy_if):
+        super(CC2538, self).__init__(phy_if)
         self.flash_start_addr = 0x00200000
         self.addr_ieee_address_secondary = 0x0027ffcc
         self.has_cmd_set_xosc = True
@@ -538,8 +539,8 @@ class CC26xx(Chip):
     PROTO_MASK_IEEE = 0x04
     PROTO_MASK_BOTH = 0x05
 
-    def __init__(self, command_interface):
-        super(CC26xx, self).__init__(command_interface)
+    def __init__(self, phy_if):
+        super(CC26xx, self).__init__(phy_if)
         self.bootloader_dis_val = 0x00000000
         self.crc_cmd = "cmdCRC32CC26xx"
 
@@ -875,23 +876,15 @@ if __name__ == "__main__":
             logger.info("Reading data from %s" % args[0])
             firmware = FirmwareFile.factory(args[0])
 
-        serial_interface = SerialInterface(conf['port'], conf['baud'])
-        serial_interface.open()
-        cmd = CommandInterface(serial_interface)
-        cmd.invoke_bootloader(conf['bootloader_active_high'],
-                              conf['bootloader_invert_lines'])
-        logger.info("Opening port %(port)s, baud %(baud)d"
-               % {'port': conf['port'], 'baud': conf['baud']})
+        logger.info("Setting up port %(port)s, baud %(baud)d"
+                    % {'port': conf['port'], 'baud': conf['baud']})
+        physical_interface = SerialInterface(conf['port'], conf['baud'])
 
-        logger.info("Connecting to target...")
+        device=Chip(physical_interface)
+        device.open()
 
-        if not cmd.sendSynch():
-            raise CmdException("Can't connect to target. Ensure boot loader "
-                               "is started. (no answer on synch sequence)")
+        device.close()
 
-        # if (cmd.cmdPing() != 1):
-        #     raise CmdException("Can't connect to target. Ensure boot loader "
-        #                        "is started. (no answer on ping command)")
 
         chip_id = cmd.cmdGetChipId()
         chip_id_str = CHIP_ID_STRS.get(chip_id, None)
