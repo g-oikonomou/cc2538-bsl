@@ -150,8 +150,9 @@ class Protocol(object):
 
         send_packet = bytearray((length, check, command,)) + data
 
-        logger.debug("send_command 0x%02x, len=%i, check=0x%02x"
-                     % (command, length, check))
+        logger.debug("send_command 0x%02x, len=%i, check=0x%02x payload=[%s]"
+                     % (command, length, check,
+                        ' '.join('%02X' % x for x in send_packet[:12])))
 
         self.interface.write(send_packet)
 
@@ -183,6 +184,7 @@ class CommandInterface(object):
     NACK_BYTE = 0x33
 
     def __init__(self, interface):
+        self.protocol = Protocol(interface)
         self.interface = interface
 
     def invoke_bootloader(self, dtr_active_high=False, inverted=False):
@@ -221,108 +223,24 @@ class CommandInterface(object):
         # See contiki-os/contiki#1533
         time.sleep(0.1)
 
-    def _wait_for_ack(self, info="", timeout=1):
-        stop = time.time() + timeout
-        got = bytearray(2)
-        while got[-2] != 00 or got[-1] not in (CommandInterface.ACK_BYTE,
-                                               CommandInterface.NACK_BYTE):
-            got += self._read(1)
-            if time.time() > stop:
-                raise CmdException("Timeout waiting for ACK/NACK after '%s'"
-                                   % (info,))
-
-        # Our bytearray's length is: 2 initial bytes + 2 bytes for the ACK/NACK
-        # plus a possible N-4 additional (buffered) bytes
-        logger.debug("Got %d additional bytes before ACK/NACK" % (len(got) - 4,))
-
-        # wait for ask
-        ask = got[-1]
-
-        if ask == CommandInterface.ACK_BYTE:
-            # ACK
-            return 1
-        elif ask == CommandInterface.NACK_BYTE:
-            # NACK
-            logger.debug("Target replied with a NACK during %s" % info)
-            return 0
-
-        # Unknown response
-        logger.debug("Unrecognised response 0x%x to %s" % (ask, info))
-        return 0
-
-    def _encode_addr(self, addr):
+    def _encode_four_bytes(self, addr):
         byte3 = (addr >> 0) & 0xFF
         byte2 = (addr >> 8) & 0xFF
         byte1 = (addr >> 16) & 0xFF
         byte0 = (addr >> 24) & 0xFF
-        if PY3:
-            return bytes([byte0, byte1, byte2, byte3])
-        else:
-            return (chr(byte0) + chr(byte1) + chr(byte2) + chr(byte3))
 
-    def _decode_addr(self, byte0, byte1, byte2, byte3):
-        return ((byte3 << 24) | (byte2 << 16) | (byte1 << 8) | (byte0 << 0))
+        return bytearray([byte0, byte1, byte2, byte3])
 
-    def _calc_checks(self, cmd, addr, size):
-        return ((sum(bytearray(self._encode_addr(addr))) +
-                 sum(bytearray(self._encode_addr(size))) +
-                 cmd) & 0xFF)
-
-    def _write(self, data, is_retry=False):
-        self.interface.write(data, is_retry)
-
-    def _read(self, length):
-        return self.interface.read(length)
-
-    def sendAck(self):
-        self._write(0x00)
-        self._write(0xCC)
-        return
-
-    def sendNAck(self):
-        self._write(0x00)
-        self._write(0x33)
-        return
-
-    def receivePacket(self):
-        # stop = time.time() + 5
-        # got = None
-        # while not got:
-        got = self._read(2)
-        #     if time.time() > stop:
-        #         break
-
-        # if not got:
-        #     raise CmdException("No response to %s" % info)
-
-        size = got[0]  # rcv size
-        chks = got[1]  # rcv checksum
-        data = bytearray(self._read(size - 2))  # rcv data
-
-        logger.debug("*** received %x bytes" % size)
-        if chks == sum(data) & 0xFF:
-            self.sendAck()
-            return data
-        else:
-            self.sendNAck()
-            # TODO: retry receiving!
-            raise CmdException("Received packet checksum error")
-            return 0
+    def _decode_four_bytes(self, byte_seq):
+        return ((byte_seq[0] << 24) | (byte_seq[1] << 16) |
+                (byte_seq[2] << 8) | (byte_seq[3] << 0))
 
     def sendSynch(self):
-        cmd = 0x55
-
-        # flush serial input buffer for first ACK reception
-        self.interface.sp.flushInput()
-
-        logger.debug("*** sending synch sequence")
-        self._write(cmd)  # send U
-        self._write(cmd)  # send U
-        return self._wait_for_ack("Synch (0x55 0x55)", 2)
+        return self.protocol.send_synch()
 
     def checkLastCmd(self):
         stat = self.cmdGetStatus()
-        if not (stat):
+        if not stat:
             raise CmdException("No response from target on status request. "
                                "(Did you disable the bootloader?)")
 
@@ -334,45 +252,33 @@ class CommandInterface(object):
             if stat_str is None:
                 logger.warning("Unrecognized status returned 0x%x" % stat[0])
             else:
-                logger.warning("Target returned: 0x%x, %s" % (stat[0], stat_str))
+                logger.warning("Target returned: 0x%x, %s"
+                               % (stat[0], stat_str))
             return 0
 
     def cmdPing(self):
         cmd = 0x20
-        lng = 3
-
-        self._write(lng)  # send size
-        self._write(cmd)  # send checksum
-        self._write(cmd)  # send data
 
         logger.debug("*** Ping command (0x20)")
-        if self._wait_for_ack("Ping (0x20)"):
+
+        if self.protocol.send_command(cmd):
             return self.checkLastCmd()
 
     def cmdReset(self):
         cmd = 0x25
-        lng = 3
-
-        self._write(lng)  # send size
-        self._write(cmd)  # send checksum
-        self._write(cmd)  # send data
 
         logger.debug("*** Reset command (0x25)")
-        if self._wait_for_ack("Reset (0x25)"):
-            return 1
+
+        return self.protocol.send_command(cmd)
 
     def cmdGetChipId(self):
         cmd = 0x28
-        lng = 3
-
-        self._write(lng)  # send size
-        self._write(cmd)  # send checksum
-        self._write(cmd)  # send data
 
         logger.debug("*** GetChipId command (0x28)")
-        if self._wait_for_ack("Get ChipID (0x28)"):
+
+        if self.protocol.send_command(cmd):
             # 4 byte answ, the 2 LSB hold chip ID
-            version = self.receivePacket()
+            version = self.protocol.read_response()
             if self.checkLastCmd():
                 assert len(version) == 4, ("Unreasonable chip "
                                            "id: %s" % repr(version))
@@ -384,184 +290,133 @@ class CommandInterface(object):
 
     def cmdGetStatus(self):
         cmd = 0x23
-        lng = 3
-
-        self._write(lng)  # send size
-        self._write(cmd)  # send checksum
-        self._write(cmd)  # send data
 
         logger.debug("*** GetStatus command (0x23)")
-        if self._wait_for_ack("Get Status (0x23)"):
-            stat = self.receivePacket()
-            return stat
+
+        if self.protocol.send_command(cmd):
+            return self.protocol.read_response()
 
     def cmdSetXOsc(self):
         cmd = 0x29
-        lng = 3
-
-        self._write(lng)  # send size
-        self._write(cmd)  # send checksum
-        self._write(cmd)  # send data
 
         logger.debug("*** SetXOsc command (0x29)")
-        if self._wait_for_ack("SetXOsc (0x29)"):
-            return 1
-            # UART speed (needs) to be changed!
+
+        return self.protocol.send_command(cmd)
 
     def cmdRun(self, addr):
         cmd = 0x22
-        lng = 7
-
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, 0))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
 
         logger.debug("*** Run command(0x22)")
+
+        self.protocol.send_command(cmd, data=self._encode_four_bytes(addr),
+                                   verify=False)
+
         return 1
 
     def cmdEraseMemory(self, addr, size):
         cmd = 0x26
-        lng = 11
-
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, size))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
-        self._write(self._encode_addr(size))  # send size
 
         logger.debug("*** Erase command(0x26)")
-        if self._wait_for_ack("Erase memory (0x26)", 10):
+
+        # Addition of bytearrays will give us a new bytearray
+        payload = self._encode_four_bytes(addr) + self._encode_four_bytes(size)
+
+        if self.protocol.send_command(cmd, data=payload, timeout=10):
             return self.checkLastCmd()
 
     def cmdBankErase(self):
         cmd = 0x2C
-        lng = 3
-
-        self._write(lng)  # send length
-        self._write(cmd)  # send checksum
-        self._write(cmd)  # send cmd
 
         logger.debug("*** Bank Erase command(0x2C)")
-        if self._wait_for_ack("Bank Erase (0x2C)", 10):
+
+        if self.protocol.send_command(cmd, timeout=10):
             return self.checkLastCmd()
 
-    def cmdCRC32(self, addr, size):
+    def cmd_crc_wrapper(self, addr, size, read_attempts=bytearray(0)):
         cmd = 0x27
-        lng = 11
-
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, size))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
-        self._write(self._encode_addr(size))  # send size
 
         logger.debug("*** CRC32 command(0x27)")
-        if self._wait_for_ack("Get CRC32 (0x27)", 1):
-            crc = self.receivePacket()
+
+        # Addition of bytearrays will give us a new bytearray
+        payload = (self._encode_four_bytes(addr) + self._encode_four_bytes(size)
+                   + read_attempts)
+
+        if self.protocol.send_command(cmd, data=payload, timeout=2):
+            crc = self.protocol.read_response()
             if self.checkLastCmd():
-                return self._decode_addr(crc[3], crc[2], crc[1], crc[0])
+                return self._decode_four_bytes(crc)
+
+    def cmdCRC32(self, addr, size):
+        return self.cmd_crc_wrapper(addr, size)
 
     def cmdCRC32CC26xx(self, addr, size):
-        cmd = 0x27
-        lng = 15
-
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, size))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
-        self._write(self._encode_addr(size))  # send size
-        self._write(self._encode_addr(0x00000000))  # send number of reads
-
-        logger.debug("*** CRC32 command(0x27)")
-        if self._wait_for_ack("Get CRC32 (0x27)", 1):
-            crc = self.receivePacket()
-            if self.checkLastCmd():
-                return self._decode_addr(crc[3], crc[2], crc[1], crc[0])
+        read_attemts = self._encode_four_bytes(0x00000000)
+        return self.cmd_crc_wrapper(addr, size, read_attemts)
 
     def cmdDownload(self, addr, size):
         cmd = 0x21
-        lng = 11
-
-        if (size % 4) != 0:  # check for invalid data lengths
-            raise Exception('Invalid data size: %i. '
-                            'Size must be a multiple of 4.' % size)
-
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, size))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
-        self._write(self._encode_addr(size))  # send size
 
         logger.debug("*** Download command (0x21)")
-        if self._wait_for_ack("Download (0x21)", 2):
+
+        if (size % 4) != 0:  # check for invalid data lengths
+            raise CmdException('Invalid data size: %i. '
+                               'Size must be a multiple of 4.' % size)
+
+        # Addition of bytearrays will give us a new bytearray
+        payload = self._encode_four_bytes(addr) + self._encode_four_bytes(size)
+
+        if self.protocol.send_command(cmd, data=payload, timeout=5):
             return self.checkLastCmd()
 
     def cmdSendData(self, data):
         cmd = 0x24
-        lng = len(data)+3
-        # TODO: check total size of data!! max 252 bytes!
-
-        self._write(lng)  # send size
-        self._write((sum(bytearray(data))+cmd) & 0xFF)  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(bytearray(data))  # send data
 
         logger.debug("*** Send Data (0x24)")
-        if self._wait_for_ack("Send data (0x24)", 10):
+
+        payload = bytearray(data)
+        payload_len = len(payload)
+
+        if payload_len > 252:
+            raise CmdException('Max data size exceeded. Size was %i'
+                               % payload_len)
+
+        if self.protocol.send_command(cmd, data=payload, timeout=10):
             return self.checkLastCmd()
 
-    def cmdMemRead(self, addr):  # untested
+    def cmd_mem_read_wrapper(self, addr, width, read_attempts=bytearray(0)):
         cmd = 0x2A
-        lng = 8
 
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, 4))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
-        self._write(4)  # send width, 4 bytes
+        logger.debug("*** Mem Read (0x2A), addr=0x%08x, width=%i"
+                     % (addr, width))
 
-        logger.debug("*** Mem Read (0x2A)")
-        if self._wait_for_ack("Mem Read (0x2A)", 1):
-            data = self.receivePacket()
+        # Addition of bytearrays will give us a new bytearray
+        payload = (self._encode_four_bytes(addr) + bytearray((width,))
+                   + read_attempts)
+
+        if self.protocol.send_command(cmd, data=payload):
+            response = self.protocol.read_response()
             if self.checkLastCmd():
-                # self._decode_addr(ord(data[3]),
-                #                   ord(data[2]),ord(data[1]),ord(data[0]))
-                return data
+                return response
+
+    def cmdMemRead(self, addr):
+        return self.cmd_mem_read_wrapper(addr, 4)
 
     def cmdMemReadCC26xx(self, addr):
-        cmd = 0x2A
-        lng = 9
-
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, 2))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
-        self._write(1)  # send width, 4 bytes
-        self._write(1)  # send number of reads
-
-        logger.debug("*** Mem Read (0x2A)")
-        if self._wait_for_ack("Mem Read (0x2A)", 1):
-            data = self.receivePacket()
-            if self.checkLastCmd():
-                return data
+        return self.cmd_mem_read_wrapper(addr, 1, bytearray((1,)))
 
     def cmdMemWrite(self, addr, data, width):  # untested
-        # TODO: check width for 1 or 4 and data size
         cmd = 0x2B
-        lng = 10
-
-        self._write(lng)  # send length
-        self._write(self._calc_checks(cmd, addr, 0))  # send checksum
-        self._write(cmd)  # send cmd
-        self._write(self._encode_addr(addr))  # send addr
-        self._write(bytearray(data))  # send data
-        self._write(width)  # send width, 4 bytes
 
         logger.debug("*** Mem write (0x2B)")
-        if self._wait_for_ack("Mem Write (0x2B)", 2):
-            return self.checkLastCmd()
 
+        if width not in (1, 4):
+            raise CmdException("cmdMemWrite error")
+
+        payload = (self._encode_four_bytes(addr) + bytearray(data) +
+                   bytearray((width,)))
+
+        if self.protocol.send_command(cmd, data=payload, timeout=2):
+            return self.checkLastCmd()
 
 # Complex commands section
 
@@ -586,8 +441,8 @@ class CommandInterface(object):
                                      "Do you want to continue?", "no")):
                     raise Exception('Aborted by user.')
 
-        logger.info("Writing %(lng)d bytes starting at address 0x%(addr)08X" %
-               {'lng': lng, 'addr': addr})
+        logger.info("Writing %(lng)d bytes starting at address 0x%(addr)08X"
+                    % {'lng': lng, 'addr': addr})
 
         offs = 0
         addr_set = 0
@@ -601,7 +456,8 @@ class CommandInterface(object):
                     self.cmdDownload(addr, lng)
                     addr_set = 1
                 SerialBSLLogger.console_handler.terminator = '\r'
-                logger.info("Write %(len)d bytes at 0x%(addr)08X\r" % {'addr': addr, 'len': trsf_size})
+                logger.info("Write %(len)d bytes at 0x%(addr)08X\r"
+                            % {'addr': addr, 'len': trsf_size})
                 SerialBSLLogger.console_handler.terminator = '\n'
                 sys.stdout.flush()
 
@@ -614,7 +470,8 @@ class CommandInterface(object):
             addr = addr + trsf_size
             lng = lng - trsf_size
 
-        logger.info("Write %(len)d bytes at 0x%(addr)08X" % {'addr': addr, 'len': lng})
+        logger.info("Write %(len)d bytes at 0x%(addr)08X"
+                    % {'addr': addr, 'len': lng})
         self.cmdDownload(addr, lng)
         return self.cmdSendData(data[offs:offs+lng])  # send last data packet
 
