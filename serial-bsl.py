@@ -223,6 +223,8 @@ class CommandInterface(object):
         if self.protocol.send_command(cmd):
             return self.checkLastCmd()
 
+        return False
+
     def cmdReset(self):
         cmd = 0x25
 
@@ -290,6 +292,8 @@ class CommandInterface(object):
 
         if self.protocol.send_command(cmd, timeout=10):
             return self.checkLastCmd()
+
+        return False
 
     def cmd_crc_wrapper(self, addr, size, read_attempts=bytearray(0)):
         cmd = 0x27
