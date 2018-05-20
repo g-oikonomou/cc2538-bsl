@@ -50,6 +50,7 @@ import logging
 from util.serial_bsl_logging import SerialBSLLogger
 from util.exception import CmdException
 from util.firmware import FirmwareFile
+from interface.serial_interface import SerialInterface
 
 logger = SerialBSLLogger.getLogger("serial-bsl")
 
@@ -61,21 +62,6 @@ QUIET = logging.INFO
 
 # Check which version of Python is running
 PY3 = sys.version_info >= (3, 0)
-
-try:
-    import serial
-except ImportError:
-    print('{} requires the Python serial library'.format(sys.argv[0]))
-    print('Please install it with one of the following:')
-    print('')
-    if PY3:
-        print('   Ubuntu:  sudo apt-get install python3-serial')
-        print('   Mac:     sudo port install py34-serial')
-    else:
-        print('   Ubuntu:  sudo apt-get install python-serial')
-        print('   Mac:     sudo port install py-serial')
-    sys.exit(1)
-
 
 # Takes chip IDs (obtained via Get ID command) to human-readable names
 CHIP_ID_STRS = {0xb964: 'CC2538',
@@ -101,31 +87,8 @@ class CommandInterface(object):
     ACK_BYTE = 0xCC
     NACK_BYTE = 0x33
 
-    def open(self, aport=None, abaudrate=500000):
-        # Try to create the object using serial_for_url(), or fall back to the
-        # old serial.Serial() where serial_for_url() is not supported.
-        # serial_for_url() is a factory class and will return a different
-        # object based on the URL. For example serial_for_url("/dev/tty.<xyz>")
-        # will return a serialposix.Serial object.
-        # For that reason, we need to make sure the port doesn't get opened at
-        # this stage: We need to set its attributes up depending on what object
-        # we get.
-        try:
-            self.sp = serial.serial_for_url(aport, do_not_open=True, timeout=10)
-        except AttributeError:
-            self.sp = serial.Serial(port=None, timeout=10)
-            self.sp.port = aport
-
-        if isinstance(self.sp, serial.serialposix.Serial):
-            self.sp.baudrate=abaudrate        # baudrate
-            self.sp.bytesize=8                # number of databits
-            self.sp.parity=serial.PARITY_NONE # parity
-            self.sp.stopbits=1                # stop bits
-            self.sp.xonxoff=0                 # s/w (XON/XOFF) flow control
-            self.sp.rtscts=0                  # h/w (RTS/CTS) flow control
-            self.sp.timeout=0.5               # set the timeout value
-
-        self.sp.open()
+    def __init__(self, interface):
+        self.interface = interface
 
     def invoke_bootloader(self, dtr_active_high=False, inverted=False):
         # Use the DTR and RTS lines to control bootloader and the !RESET pin.
@@ -137,11 +100,11 @@ class CommandInterface(object):
         # RTS: connected to !RESET
         # If inverted is True, pin connections are the other way round
         if inverted:
-            set_bootloader_pin = self.sp.setRTS
-            set_reset_pin = self.sp.setDTR
+            set_bootloader_pin = self.interface.sp.setRTS
+            set_reset_pin = self.interface.sp.setDTR
         else:
-            set_bootloader_pin = self.sp.setDTR
-            set_reset_pin = self.sp.setRTS
+            set_bootloader_pin = self.interface.sp.setDTR
+            set_reset_pin = self.interface.sp.setRTS
 
         set_bootloader_pin(1 if not dtr_active_high else 0)
         set_reset_pin(0)
@@ -162,9 +125,6 @@ class CommandInterface(object):
         #
         # See contiki-os/contiki#1533
         time.sleep(0.1)
-
-    def close(self):
-        self.sp.close()
 
     def _wait_for_ack(self, info="", timeout=1):
         stop = time.time() + timeout
@@ -214,38 +174,10 @@ class CommandInterface(object):
                  cmd) & 0xFF)
 
     def _write(self, data, is_retry=False):
-        if PY3:
-            if type(data) == int:
-                assert data < 256
-                goal = 1
-                written = self.sp.write(bytes([data]))
-            elif type(data) == bytes or type(data) == bytearray:
-                goal = len(data)
-                written = self.sp.write(data)
-            else:
-                raise CmdException("Internal Error. Bad data type: {}"
-                                   .format(type(data)))
-        else:
-            if type(data) == int:
-                assert data < 256
-                goal = 1
-                written = self.sp.write(chr(data))
-            else:
-                goal = len(data)
-                written = self.sp.write(data)
-        if written < goal:
-            logger.debug("*** Only wrote {} of target {} bytes"
-                   .format(written, goal))
-            if is_retry and written == 0:
-                raise CmdException("Failed to write data on the serial bus")
-            logger.debug("*** Retrying write for remainder")
-            if type(data) == int:
-                return self._write(data, is_retry=True)
-            else:
-                return self._write(data[written:], is_retry=True)
+        self.interface.write(data, is_retry)
 
     def _read(self, length):
-        return bytearray(self.sp.read(length))
+        return self.interface.read(length)
 
     def sendAck(self):
         self._write(0x00)
@@ -286,7 +218,7 @@ class CommandInterface(object):
         cmd = 0x55
 
         # flush serial input buffer for first ACK reception
-        self.sp.flushInput()
+        self.interface.sp.flushInput()
 
         logger.debug("*** sending synch sequence")
         self._write(cmd)  # send U
@@ -1024,8 +956,9 @@ if __name__ == "__main__":
             else:
                 raise Exception('No serial port found.')
 
-        cmd = CommandInterface()
-        cmd.open(conf['port'], conf['baud'])
+        serial_interface = SerialInterface(conf['port'], conf['baud'])
+        serial_interface.open()
+        cmd = CommandInterface(serial_interface)
         cmd.invoke_bootloader(conf['bootloader_active_high'],
                               conf['bootloader_invert_lines'])
         logger.info("Opening port %(port)s, baud %(baud)d"
@@ -1060,11 +993,12 @@ if __name__ == "__main__":
 
         if conf['force_speed'] != 1 and device.has_cmd_set_xosc:
             if cmd.cmdSetXOsc():  # switch to external clock source
-                cmd.close()
+                serial_interface.close()
                 conf['baud'] = 1000000
-                cmd.open(conf['port'], conf['baud'])
+                serial_interface.sp.baudrate = conf['baud']
                 logger.info("Opening port %(port)s, baud %(baud)d"
                        % {'port': conf['port'], 'baud': conf['baud']})
+                serial_interface.open()
                 logger.info("Reconnecting to target at higher speed...")
                 if (cmd.sendSynch() != 1):
                     raise CmdException("Can't connect to target after clock "
