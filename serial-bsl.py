@@ -68,19 +68,6 @@ CHIP_ID_STRS = {0xb964: 'CC2538',
                 0xb965: 'CC2538'
                 }
 
-RETURN_CMD_STRS = {0x40: 'Success',
-                   0x41: 'Unknown command',
-                   0x42: 'Invalid command',
-                   0x43: 'Invalid address',
-                   0x44: 'Flash fail'
-                   }
-
-COMMAND_RET_SUCCESS = 0x40
-COMMAND_RET_UNKNOWN_CMD = 0x41
-COMMAND_RET_INVALID_CMD = 0x42
-COMMAND_RET_INVALID_ADR = 0x43
-COMMAND_RET_FLASH_FAIL = 0x44
-
 
 class Protocol(object):
     ACK_NACK_START_BYTE = 0x00
@@ -179,6 +166,18 @@ class Protocol(object):
 
 
 class CommandInterface(object):
+    COMMAND_RET_SUCCESS = 0x40
+    COMMAND_RET_UNKNOWN_CMD = 0x41
+    COMMAND_RET_INVALID_CMD = 0x42
+    COMMAND_RET_INVALID_ADR = 0x43
+    COMMAND_RET_FLASH_FAIL = 0x44
+
+    RETURN_CMD_STRS = {COMMAND_RET_SUCCESS: 'Success',
+                       COMMAND_RET_UNKNOWN_CMD: 'Unknown command',
+                       COMMAND_RET_INVALID_CMD: 'Invalid command',
+                       COMMAND_RET_INVALID_ADR: 'Invalid address',
+                       COMMAND_RET_FLASH_FAIL: 'Flash fail'}
+
     def __init__(self, interface):
         self.protocol = Protocol(interface)
         self.interface = interface
@@ -240,11 +239,11 @@ class CommandInterface(object):
             raise CmdException("No response from target on status request. "
                                "(Did you disable the bootloader?)")
 
-        if stat[0] == COMMAND_RET_SUCCESS:
+        if stat[0] == CommandInterface.COMMAND_RET_SUCCESS:
             logger.debug("Command Successful")
             return 1
         else:
-            stat_str = RETURN_CMD_STRS.get(stat[0], None)
+            stat_str = CommandInterface.RETURN_CMD_STRS.get(stat[0], None)
             if stat_str is None:
                 logger.warning("Unrecognized status returned 0x%x" % stat[0])
             else:
