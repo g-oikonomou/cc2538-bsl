@@ -48,7 +48,7 @@ import struct
 import traceback
 import logging
 from util.serial_bsl_logging import SerialBSLLogger
-from util.exception import CmdException, ProtocolException
+from util.exception import CmdException, ProtocolException, SerialBSLException
 from util.firmware import FirmwareFile
 from interface.serial_interface import SerialInterface
 
@@ -192,9 +192,6 @@ class CommandInterface(object):
     def _decode_four_bytes(self, byte_seq):
         return ((byte_seq[0] << 24) | (byte_seq[1] << 16) |
                 (byte_seq[2] << 8) | (byte_seq[3] << 0))
-
-    def sendSynch(self):
-        return self.protocol.send_synch()
 
     def checkLastCmd(self):
         stat = self.cmdGetStatus()
@@ -447,6 +444,24 @@ class Chip(object):
         self.phy_if = phy_if
         self.protocol = Protocol(phy_if)
         self.cmd_if = CommandInterface(self.protocol)
+
+    def open(self):
+        logger.info("Connecting to target device...")
+        self.phy_if.open()
+
+        if type(self.phy_if) is SerialInterface:
+            try:
+                self.protocol.send_synch()
+                return self.cmd_if.cmdPing()
+            except ProtocolException as e:
+                logger.error(e)
+                raise SerialBSLException("Device did not respond to the synch. "
+                                         "Ensure boot loader is started.")
+        return True
+
+    def close(self):
+        logger.info("Closing target device...")
+        self.phy_if.close()
 
     def crc(self, address, size):
         return getattr(self.command_interface, self.crc_cmd)(address, size)
