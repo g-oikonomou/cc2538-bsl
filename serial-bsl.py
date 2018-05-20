@@ -445,9 +445,57 @@ class Chip(object):
         self.protocol = Protocol(phy_if)
         self.cmd_if = CommandInterface(self.protocol)
 
-    def open(self):
+    def invoke_bootloader(self, bsl_active_high=False, inverted=False):
+        """
+        Use the RTS and CTS (DTR) lines to force the device into bootloader mode
+
+        This assumes that:
+          * One of the two lines is connected to the Chip's !RESET line
+          * The second line is connected the bootloader (BSL) pin
+
+
+        Parameters:
+            bsl_active_high:
+                True: Chip enters bootloader mode is pin is high on reset
+                False: Chip enters bootloader mode is pin is low on reset
+            inverted:
+                False:
+                    * RTS connected to !RESET
+                    * DTR connected to BSL
+                True:
+                    * RTS connected to BSL
+                    * DTR connected to !RESET
+        """
+        if inverted:
+            set_bootloader_pin = self.phy_if.sp.setRTS
+            set_reset_pin = self.phy_if.sp.setDTR
+        else:
+            set_bootloader_pin = self.phy_if.sp.setDTR
+            set_reset_pin = self.phy_if.sp.setRTS
+
+        set_bootloader_pin(1 if bsl_active_high else 0)
+        set_reset_pin(0)
+        set_reset_pin(1)
+        set_reset_pin(0)
+        time.sleep(0.002)
+        set_bootloader_pin(0 if bsl_active_high else 1)
+
+        # Some boards have a co-processor that detects this sequence here and
+        # then drives the main chip's BSL enable and !RESET pins. Depending on
+        # board design and co-processor behaviour, the !RESET pin may get
+        # asserted after we have finished the sequence here. In this case, we
+        # need a small delay so as to avoid trying to talk to main chip before
+        # it has actually entered its bootloader mode.
+        #
+        # See contiki-os/contiki#1533
+        time.sleep(0.1)
+
+    def open(self, force_bsl=False):
         logger.info("Connecting to target device...")
         self.phy_if.open()
+
+        if force_bsl:
+            self.invoke_bootloader()
 
         if type(self.phy_if) is SerialInterface:
             try:
@@ -896,7 +944,7 @@ if __name__ == "__main__":
         physical_interface = SerialInterface(conf['port'], conf['baud'])
 
         device=Chip(physical_interface)
-        device.open()
+        device.open(force_bsl=True)
 
         device.close()
 
