@@ -52,7 +52,7 @@ from util.exception import CmdException, ProtocolException
 from util.firmware import FirmwareFile
 from interface.serial_interface import SerialInterface
 
-logger = SerialBSLLogger.getLogger("serial-bsl")
+logger = SerialBSLLogger.get_logger("serial-bsl")
 
 # version
 VERSION_STRING = "2.1"
