@@ -908,6 +908,10 @@ if __name__ == "__main__":
             else:
                 raise Exception('No serial port found.')
 
+        if conf['write'] or conf['verify']:
+            logger.info("Reading data from %s" % args[0])
+            firmware = FirmwareFile.factory(args[0])
+
         serial_interface = SerialInterface(conf['port'], conf['baud'])
         serial_interface.open()
         cmd = CommandInterface(serial_interface)
@@ -915,9 +919,6 @@ if __name__ == "__main__":
                               conf['bootloader_invert_lines'])
         logger.info("Opening port %(port)s, baud %(baud)d"
                % {'port': conf['port'], 'baud': conf['baud']})
-        if conf['write'] or conf['verify']:
-            logger.info("Reading data from %s" % args[0])
-            firmware = FirmwareFile.factory(args[0])
 
         logger.info("Connecting to target...")
 
