@@ -179,10 +179,6 @@ class Protocol(object):
 
 
 class CommandInterface(object):
-
-    ACK_BYTE = 0xCC
-    NACK_BYTE = 0x33
-
     def __init__(self, interface):
         self.protocol = Protocol(interface)
         self.interface = interface
