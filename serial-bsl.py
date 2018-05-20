@@ -50,6 +50,7 @@ import binascii
 import traceback
 import logging
 from util.serial_bsl_logging import SerialBSLLogger
+from util.exception import CmdException
 
 logger = SerialBSLLogger.getLogger("serial-bsl")
 
@@ -107,10 +108,6 @@ COMMAND_RET_UNKNOWN_CMD = 0x41
 COMMAND_RET_INVALID_CMD = 0x42
 COMMAND_RET_INVALID_ADR = 0x43
 COMMAND_RET_FLASH_FAIL = 0x44
-
-
-class CmdException(Exception):
-    pass
 
 
 class FirmwareFile(object):
