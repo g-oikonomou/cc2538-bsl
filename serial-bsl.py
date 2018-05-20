@@ -182,42 +182,6 @@ class CommandInterface(object):
         self.protocol = Protocol(interface)
         self.interface = interface
 
-    def invoke_bootloader(self, dtr_active_high=False, inverted=False):
-        # Use the DTR and RTS lines to control bootloader and the !RESET pin.
-        # This can automatically invoke the bootloader without the user
-        # having to toggle any pins.
-        #
-        # If inverted is False (default):
-        # DTR: connected to the bootloader pin
-        # RTS: connected to !RESET
-        # If inverted is True, pin connections are the other way round
-        if inverted:
-            set_bootloader_pin = self.interface.sp.setRTS
-            set_reset_pin = self.interface.sp.setDTR
-        else:
-            set_bootloader_pin = self.interface.sp.setDTR
-            set_reset_pin = self.interface.sp.setRTS
-
-        set_bootloader_pin(1 if not dtr_active_high else 0)
-        set_reset_pin(0)
-        set_reset_pin(1)
-        set_reset_pin(0)
-        # Make sure the pin is still asserted when the chip
-        # comes out of reset. This fixes an issue where
-        # there wasn't enough delay here on Mac.
-        time.sleep(0.002)
-        set_bootloader_pin(0 if not dtr_active_high else 1)
-
-        # Some boards have a co-processor that detects this sequence here and
-        # then drives the main chip's BSL enable and !RESET pins. Depending on
-        # board design and co-processor behaviour, the !RESET pin may get
-        # asserted after we have finished the sequence here. In this case, we
-        # need a small delay so as to avoid trying to talk to main chip before
-        # it has actually entered its bootloader mode.
-        #
-        # See contiki-os/contiki#1533
-        time.sleep(0.1)
-
     def _encode_four_bytes(self, addr):
         byte3 = (addr >> 0) & 0xFF
         byte2 = (addr >> 8) & 0xFF
