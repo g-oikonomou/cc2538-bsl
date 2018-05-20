@@ -48,7 +48,7 @@ import struct
 import traceback
 import logging
 from util.serial_bsl_logging import SerialBSLLogger
-from util.exception import CmdException
+from util.exception import CmdException, ProtocolException
 from util.firmware import FirmwareFile
 from interface.serial_interface import SerialInterface
 
@@ -80,6 +80,101 @@ COMMAND_RET_UNKNOWN_CMD = 0x41
 COMMAND_RET_INVALID_CMD = 0x42
 COMMAND_RET_INVALID_ADR = 0x43
 COMMAND_RET_FLASH_FAIL = 0x44
+
+
+class Protocol(object):
+    ACK_NACK_START_BYTE = 0x00
+    ACK_BYTE = 0xCC
+    NACK_BYTE = 0x33
+    SYNCH_BYTE = 0x55
+
+    def __init__(self, interface):
+        self.interface = interface
+
+    @staticmethod
+    def _calc_checksum(command, data=bytearray(0)):
+        return (command + sum(data)) & 0xFF
+
+    def send_synch(self):
+        cmd = Protocol.SYNCH_BYTE
+
+        self.interface.flush()
+
+        logger.debug("Sending synch sequence")
+
+        self.interface.write(bytearray([cmd, cmd]))
+        return self._wait_for_ack(Protocol.SYNCH_BYTE, 2)
+
+    def _wait_for_ack(self, command, timeout=1):
+        stop = time.time() + timeout
+        got = bytearray(2)
+
+        while (got[-2] != Protocol.ACK_NACK_START_BYTE or
+               got[-1] not in (Protocol.ACK_BYTE, Protocol.NACK_BYTE)):
+
+            got += self.interface.read(1)
+            if time.time() > stop:
+                raise ProtocolException("Timeout waiting for ACK/NACK after "
+                                        "'0x%02x'" % (command,))
+
+        # Our bytearray's length is: 2 initial bytes + 2 bytes for the ACK/NACK
+        # plus a possible N-4 additional (buffered) bytes
+        logger.debug("Got %d additional bytes before ACK/NACK"
+                     % (len(got) - 4,))
+
+        # The ACK/NACK byte is the last one in the bytearray
+        ask = got[-1]
+
+        if ask == Protocol.ACK_BYTE:
+            return True
+        elif ask == Protocol.NACK_BYTE:
+            logger.debug("Target replied with a NACK during 0x%02x" % command)
+            return False
+
+        # Unknown response
+        logger.debug("Unrecognised response 0x%x to 0x%02x" % (ask, command))
+        return True
+
+    def send_ack(self):
+        self.interface.write(bytearray([Protocol.ACK_NACK_START_BYTE,
+                                        Protocol.ACK_BYTE]))
+
+    def send_nack(self):
+        self.interface.write(bytearray([Protocol.ACK_NACK_START_BYTE,
+                                        Protocol.NACK_BYTE]))
+
+    def send_command(self, command, data=bytearray(0), verify=True,
+                     timeout=1):
+        check = self._calc_checksum(command, data)
+        length = 3 + len(data)
+
+        send_packet = bytearray((length, check, command,)) + data
+
+        logger.debug("send_command 0x%02x, len=%i, check=0x%02x"
+                     % (command, length, check))
+
+        self.interface.write(send_packet)
+
+        if verify:
+            return self._wait_for_ack(command, timeout)
+
+        return True
+
+    def read_response(self):
+        got = self.interface.read(2)
+
+        size = got[0]
+        chks = got[1]
+        data = bytearray(self.interface.read(size - 2))
+
+        logger.debug("Received 0x%02x bytes" % size)
+        if chks == sum(data) & 0xFF:
+            self.send_ack()
+            return data
+        else:
+            self.send_nack()
+            # TODO: retry receiving!
+            raise ProtocolException("Received packet checksum error")
 
 
 class CommandInterface(object):

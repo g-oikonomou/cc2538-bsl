@@ -34,3 +34,8 @@ class SerialBSLException(Exception):
 class CmdException(SerialBSLException):
     """A generic serial-bsl command interface exception"""
     pass
+
+
+class ProtocolException(SerialBSLException):
+    """A serial-bsl protocol exception"""
+    pass
